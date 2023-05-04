@@ -1,29 +1,59 @@
-FROM golang:1.12-alpine as builder
-
-# Define what version of lightningnetwork/lnd to use
-ARG NIGIRI_LND_VERSION
-ENV NIGIRI_LND_VERSION ${NIGIRI_LND_VERSION:-"v0.7.0-beta"}
+# If you change this value, please change it in the following files as well:
+# /.travis.yml
+# /dev.Dockerfile
+# /make/builder.Dockerfile
+# /.github/workflows/main.yml
+# /.github/workflows/release.yml
+FROM golang:1.20.3-alpine as builder
 
 # Force Go to use the cgo based DNS resolver. This is required to ensure DNS
 # queries required to connect to linked containers succeed.
 ENV GODEBUG netdns=cgo
 
-# Install dependencies and install/build lnd.
-RUN apk add --no-cache --update alpine-sdk git make \
-  && git clone --branch v0.7.0-beta --depth 1 https://github.com/lightningnetwork/lnd \
-  && cd lnd \
-  && make \
-  && make install
+# Pass a tag, branch or a commit using build-arg.  This allows a docker
+# image to be built from a specified Git state.  The default image
+# will use the Git tip of master by default.
+ARG checkout="master"
+ARG git_url="https://github.com/lightningnetwork/lnd"
 
-# Start a new, final image to reduce size.
+# Install dependencies and build the binaries.
+RUN apk add --no-cache --update alpine-sdk \
+    git \
+    make \
+    gcc \
+&&  git clone $git_url /go/src/github.com/lightningnetwork/lnd \
+&&  cd /go/src/github.com/lightningnetwork/lnd \
+&&  git checkout $checkout \
+&&  make release-install tags="signrpc walletrpc chainrpc invoicesrpc"
+
+# Start a new, final image.
 FROM alpine as final
 
-# Copy the binaries and entrypoint from the builder image.
+# Define a root volume for data persistence.
+VOLUME /root/.lnd
+
+# Add utilities for quality of life and SSL-related reasons. We also require
+# curl and gpg for the signature verification script.
+RUN apk --no-cache add \
+    bash \
+    jq \
+    ca-certificates \
+    gnupg \
+    curl
+
+# Copy the binaries from the builder image.
 COPY --from=builder /go/bin/lncli /bin/
 COPY --from=builder /go/bin/lnd /bin/
+COPY --from=builder /go/src/github.com/lightningnetwork/lnd/scripts/verify-install.sh /
+COPY --from=builder /go/src/github.com/lightningnetwork/lnd/scripts/keys/* /keys/
 
-# Add bash.
-RUN apk add --no-cache bash
+# Store the SHA256 hash of the binaries that were just produced for later
+# verification.
+RUN sha256sum /bin/lnd /bin/lncli > /shasums.txt \
+  && cat /shasums.txt
 
-# Define entrypoint
-ENTRYPOINT ["/bin/lnd"]
+# Expose lnd ports (p2p, rpc).
+EXPOSE 9735 10009
+
+# Specify the start command and entrypoint as the lnd daemon.
+ENTRYPOINT ["lnd"]
