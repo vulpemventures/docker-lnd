@@ -1,4 +1,4 @@
-# Docker bitcoin
+# Docker LND
 
 Dockerfile of the public image [ghcr.io/vulpemventures/lnd:latest](https://github.com/vulpemventures/docker-lnd/pkgs/container/lnd)
 
